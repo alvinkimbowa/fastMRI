@@ -161,6 +161,8 @@ def build_args():
     args = parser.parse_args()
 
     # configure checkpointing in checkpoint_dir
+    if not isinstance(args.default_root_dir, pathlib.Path):
+        args.default_root_dir = pathlib.Path(args.default_root_dir)
     checkpoint_dir = args.default_root_dir / "checkpoints"
     if not checkpoint_dir.exists():
         checkpoint_dir.mkdir(parents=True)
