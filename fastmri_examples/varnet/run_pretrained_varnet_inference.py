@@ -5,6 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
 
+from glob import glob
 import argparse
 import time
 from collections import defaultdict
@@ -18,7 +19,8 @@ from tqdm import tqdm
 import fastmri
 import fastmri.data.transforms as T
 from fastmri.data import SliceDataset
-from fastmri.models import VarNet
+from fastmri.pl_modules import FastMriDataModule, VarNetModule
+from fastmri.data.subsample import create_mask_for_mask_type
 
 VARNET_FOLDER = "https://dl.fbaipublicfiles.com/fastMRI/trained_models/varnet/"
 MODEL_FNAMES = {
@@ -48,7 +50,7 @@ def download_model(url, fname):
 def run_varnet_model(batch, model, device):
     crop_size = batch.crop_size
 
-    output = model(batch.masked_kspace.to(device), batch.mask.to(device)).cpu()
+    output = model(batch.masked_kspace.to(device), batch.mask.to(device), batch.num_low_frequencies.to(device)).cpu()
 
     # detect FLAIR 203
     if output.shape[-1] < crop_size[1]:
@@ -59,8 +61,22 @@ def run_varnet_model(batch, model, device):
     return output, int(batch.slice_num[0]), batch.fname[0]
 
 
-def run_inference(challenge, state_dict_file, data_path, output_path, device):
-    model = VarNet(num_cascades=12, pools=4, chans=18, sens_pools=4, sens_chans=8)
+def run_inference(
+    challenge, state_dict_file, data_path, output_path, device,
+    mask_type, center_fractions, accelerations
+    ):
+    model = VarNetModule(
+        num_cascades=8,  # number of unrolled iterations
+        pools=4,  # number of pooling layers for U-Net
+        chans=18,  # number of top-level channels for U-Net
+        sens_pools=4,  # number of pooling layers for sense est. U-Net
+        sens_chans=8,  # number of top-level channels for sense est. U-Net
+        lr=0.001,  # Adam learning rate
+        lr_step_size=40,  # epoch at which to decrease learning rate
+        lr_gamma=0.1,  # extent to which to decrease learning rate
+        weight_decay=0.0,  # weight regularization strength
+    )
+
     # download the state_dict if we don't have it
     if state_dict_file is None:
         if not Path(MODEL_FNAMES[challenge]).exists():
@@ -69,15 +85,19 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device):
 
         state_dict_file = MODEL_FNAMES[challenge]
 
-    model.load_state_dict(torch.load(state_dict_file))
+    model.load_state_dict(torch.load(state_dict_file)["state_dict"])
     model = model.eval()
 
     # data loader setup
-    data_transform = T.VarNetDataTransform()
+    mask = create_mask_for_mask_type(
+        args.mask_type, args.center_fractions, args.accelerations
+    )
+    data_transform = T.VarNetDataTransform(mask_func=mask)
     dataset = SliceDataset(
         root=data_path, transform=data_transform, challenge="multicoil"
     )
     dataloader = torch.utils.data.DataLoader(dataset, num_workers=4)
+    print(len(next(iter(dataloader))))
 
     # run the model
     start_time = time.perf_counter()
@@ -139,8 +159,33 @@ if __name__ == "__main__":
         required=True,
         help="Path for saving reconstructions",
     )
+    parser.add_argument(
+        "--mask_type",
+        default="equispaced_fraction",
+        choices=("random", "equispaced", "equispaced_fraction"),
+        type=str,
+        help="Mask type",
+    )
+    parser.add_argument(
+        "--center_fractions",
+        nargs="+",
+        type=float,
+        default=[0.08],
+        help="Center fraction for the mask",
+    )
+    parser.add_argument(
+        "--accelerations",
+        nargs="+",
+        type=int,
+        default=[4],
+        help="Acceleration for the mask",
+    )
+
 
     args = parser.parse_args()
+
+    args.state_dict_file = glob(f"{args.state_dict_file}/*.ckpt")[0]
+    print("State dict file: ", args.state_dict_file)
 
     run_inference(
         args.challenge,
@@ -148,4 +193,7 @@ if __name__ == "__main__":
         args.data_path,
         args.output_path,
         torch.device(args.device),
+        args.mask_type,
+        args.center_fractions,
+        args.accelerations,
     )
