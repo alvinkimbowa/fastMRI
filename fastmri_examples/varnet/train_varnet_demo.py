@@ -30,7 +30,7 @@ def cli_main(args):
     # use random masks for train transform, fixed masks for val transform
     train_transform = VarNetDataTransform(mask_func=mask, use_seed=False)
     val_transform = VarNetDataTransform(mask_func=mask)
-    test_transform = VarNetDataTransform()
+    test_transform = VarNetDataTransform(mask_func=mask)
     # ptl data module - this handles data loaders
     data_module = FastMriDataModule(
         data_path=args.data_path,
